@@ -1387,7 +1387,7 @@ export default function MealPlanBuilder() {
                           className="flex items-center bg-green-600 hover:bg-green-700 text-white"
                         >
                           <Cpu className="mr-2 h-4 w-4" />
-                          Generate AI Meal Plan
+                          Generate Different AI Meal Plan 
                         </Button>
                       )}
                       

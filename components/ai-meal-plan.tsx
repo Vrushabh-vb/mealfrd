@@ -71,7 +71,7 @@ export default function AIMealPlan() {
   const [days, setDays] = useState(7)
   
   // UI states
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(true) // Start with loading true
   const [error, setError] = useState<string | null>(null)
   const [mealPlan, setMealPlan] = useState<MealPlan | null>(null)
   const [activeAlternative, setActiveAlternative] = useState<{day: number, meal: number, dish: string} | null>(null)
@@ -133,6 +133,27 @@ export default function AIMealPlan() {
         try {
           // Try to parse JSON response
           const parsedData = JSON.parse(response.data)
+          
+          // Validate the response structure has the required fields
+          if (!parsedData.dailyCalories || !parsedData.days || !Array.isArray(parsedData.days)) {
+            throw new Error("Invalid meal plan structure");
+          }
+          
+          // Check if days array has content
+          if (parsedData.days.length === 0) {
+            throw new Error("No meal plan days provided");
+          }
+          
+          // Verify that each day has a meals array
+          for (const day of parsedData.days) {
+            if (!day.meals || !Array.isArray(day.meals) || day.meals.length === 0) {
+              throw new Error("Invalid meal structure in day: " + day.day);
+            }
+          }
+          
+          // Ensure each day has unique meals
+          ensureUniqueMeals(parsedData);
+          
           setMealPlan(parsedData)
         } catch (parseError) {
           console.error("Failed to parse JSON:", parseError)
@@ -144,8 +165,16 @@ export default function AIMealPlan() {
             try {
               // Try to parse the extracted JSON
               const parsedData = JSON.parse(extractedJson);
-              setMealPlan(parsedData);
-              return;
+              
+              // Validate the extracted data
+              if (parsedData.dailyCalories && parsedData.days && Array.isArray(parsedData.days)) {
+                // Ensure each day has unique meals
+                ensureUniqueMeals(parsedData);
+                setMealPlan(parsedData);
+                return;
+              } else {
+                throw new Error("Invalid structure in extracted JSON");
+              }
             } catch (extractError) {
               console.error("Failed to parse extracted JSON:", extractError);
             }
@@ -159,24 +188,95 @@ export default function AIMealPlan() {
             // 2. Make sure property names are in double quotes
             cleanedData = cleanedData.replace(/([{,]\s*)(\w+)(\s*:)/g, '$1"$2"$3');
             
-            // 3. Try to parse again
+            // 3. Remove trailing commas
+            cleanedData = cleanedData.replace(/,(\s*[\]}])/g, '$1');
+            
+            // 4. Try to parse again
             const parsedData = JSON.parse(cleanedData);
-            setMealPlan(parsedData);
+            
+            // 5. Verify structure
+            if (parsedData.dailyCalories && parsedData.days && Array.isArray(parsedData.days)) {
+              // Ensure each day has unique meals
+              ensureUniqueMeals(parsedData);
+              setMealPlan(parsedData);
+              return;
+            } else {
+              throw new Error("Invalid structure after cleaning");
+            }
           } catch (cleanError) {
-            // All parsing attempts failed
-            setError("Could not process the meal plan data. Please try again.");
+            // Check if the response already includes a fallback meal plan
+            if (response.error && response.error.includes("fallback meal plan")) {
+              console.log("Using fallback meal plan provided by the API");
+              // The fallback should already be in parsedData
+            } else {
+              // All parsing attempts failed
+              setError("We couldn't create your meal plan. Try selecting fewer restrictions or preferences.");
+            }
           }
         }
       } else {
-        setError(response.error || "Failed to generate meal plan")
+        setError(response.error || "We couldn't generate your meal plan. Please try again.")
       }
     } catch (err) {
-      setError("An error occurred while generating the meal plan")
+      setError("Something went wrong. Please try again with fewer options selected.")
       console.error(err)
     } finally {
       setLoading(false)
     }
   }
+
+  // Ensure meal plan has variety across days
+  const ensureUniqueMeals = (mealPlan: MealPlan) => {
+    // Map to track seen dishes
+    const seenBreakfasts = new Set<string>();
+    const seenLunches = new Set<string>();
+    const seenSnacks = new Set<string>();
+    const seenDinners = new Set<string>();
+    
+    // Process each day
+    mealPlan.days.forEach((day, dayIndex) => {
+      day.meals.forEach((meal, mealIndex) => {
+        let mealSet: Set<string>;
+        
+        // Determine which set to use based on meal name
+        if (meal.name.toLowerCase().includes('breakfast')) {
+          mealSet = seenBreakfasts;
+        } else if (meal.name.toLowerCase().includes('lunch')) {
+          mealSet = seenLunches;
+        } else if (meal.name.toLowerCase().includes('snack')) {
+          mealSet = seenSnacks;
+        } else {
+          mealSet = seenDinners;
+        }
+        
+        // If we've seen this dish before, try to replace it with an alternative
+        if (mealSet.has(meal.dish) && meal.alternatives && meal.alternatives.length > 0) {
+          // Find an alternative that hasn't been used yet
+          const unusedAlternative = meal.alternatives.find(alt => !mealSet.has(alt));
+          
+          if (unusedAlternative) {
+            // Use the unused alternative
+            meal.dish = unusedAlternative;
+            // Remove the used alternative from alternatives list and add the original dish
+            meal.alternatives = meal.alternatives
+              .filter(alt => alt !== unusedAlternative)
+              .concat([meal.dish]);
+          }
+        }
+        
+        // Add this dish to the set of seen dishes
+        mealSet.add(meal.dish);
+      });
+    });
+    
+    return mealPlan;
+  };
+  
+  // Load initial meal plan when component mounts
+  useEffect(() => {
+    generateMealPlan();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   
   // Handle meal alternative selection
   const selectAlternative = (day: number, meal: number, alternative: string) => {
@@ -192,6 +292,7 @@ export default function AIMealPlan() {
   const handleStartOver = () => {
     setMealPlan(null)
     setError(null)
+    generateMealPlan()
   }
   
   // Export meal plan as PDF
@@ -294,148 +395,218 @@ export default function AIMealPlan() {
           </Badge>
         </div>
         
-        {!mealPlan && !loading && (
-          <div className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="goal">Your Goal</Label>
-                  <Select value={goal} onValueChange={setGoal}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select your goal" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="weight_loss">Weight Loss</SelectItem>
-                      <SelectItem value="muscle_gain">Muscle Gain</SelectItem>
-                      <SelectItem value="maintenance">Maintain Weight</SelectItem>
-                      <SelectItem value="general_health">General Health</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                
-                <div className="space-y-2">
-                  <Label htmlFor="dietType">Diet Type</Label>
-                  <Select value={dietType} onValueChange={setDietType}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select diet type" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="any">Any</SelectItem>
-                      <SelectItem value="vegetarian">Vegetarian</SelectItem>
-                      <SelectItem value="vegan">Vegan</SelectItem>
-                      <SelectItem value="non-vegetarian">Non-vegetarian</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                
-                <div className="space-y-2">
-                  <Label>Daily Calories ({dailyCalories} kcal)</Label>
-                  <Slider 
-                    min={1200}
-                    max={3500}
-                    step={100}
-                    value={[dailyCalories]}
-                    onValueChange={(value) => setDailyCalories(value[0])}
-                    className="py-4"
-                  />
-                </div>
-                
-                <div className="space-y-2">
-                  <Label>Number of Days ({days})</Label>
-                  <Slider 
-                    min={1}
-                    max={14}
-                    step={1}
-                    value={[days]}
-                    onValueChange={(value) => setDays(value[0])}
-                    className="py-4"
-                  />
-                </div>
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="goal">Your Goal</Label>
+                <Select value={goal} onValueChange={(value) => {
+                  setGoal(value);
+                  if (mealPlan) {
+                    setMealPlan(null);
+                    setLoading(true);
+                    setTimeout(() => generateMealPlan(), 100);
+                  }
+                }}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select your goal" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="weight_loss">Weight Loss</SelectItem>
+                    <SelectItem value="muscle_gain">Muscle Gain</SelectItem>
+                    <SelectItem value="maintenance">Maintain Weight</SelectItem>
+                    <SelectItem value="general_health">General Health</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <Label>Allergies/Restrictions</Label>
-                  <div className="grid grid-cols-2 gap-2">
-                    {allergyOptions.map((allergy) => (
-                      <div key={allergy} className="flex items-center space-x-2">
-                        <Checkbox 
-                          id={`allergy-${allergy}`} 
-                          checked={allergies.includes(allergy)}
-                          onCheckedChange={() => toggleAllergy(allergy)}
-                        />
-                        <Label htmlFor={`allergy-${allergy}`}>{allergy}</Label>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                
-                <div className="space-y-2">
-                  <Label>Cuisine Preferences</Label>
-                  <div className="grid grid-cols-2 gap-2">
-                    {cuisineOptions.map((cuisine) => (
-                      <div key={cuisine} className="flex items-center space-x-2">
-                        <Checkbox 
-                          id={`cuisine-${cuisine}`} 
-                          checked={cuisinePreference.includes(cuisine)}
-                          onCheckedChange={() => toggleCuisine(cuisine)}
-                        />
-                        <Label htmlFor={`cuisine-${cuisine}`}>{cuisine}</Label>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                
-                <div className="space-y-2">
-                  <Label>Excluded Foods</Label>
-                  <div className="flex gap-2">
-                    <Input 
-                      placeholder="Food to exclude" 
-                      value={currentExclusion}
-                      onChange={(e) => setCurrentExclusion(e.target.value)}
-                      onKeyDown={handleExclusionKeyDown}
-                      className="flex-1"
-                    />
-                    <Button 
-                      variant="outline" 
-                      onClick={addExclusion}
-                      disabled={!currentExclusion.trim()}
-                    >
-                      <Plus className="h-4 w-4 mr-1" /> Add
-                    </Button>
-                  </div>
-                  
-                  <div className="flex flex-wrap gap-2 pt-2">
-                    {exclusions.map((item, i) => (
-                      <Badge key={i} variant="secondary" className="px-2 py-1">
-                        {item}
-                        <button 
-                          onClick={() => removeExclusion(item)}
-                          className="ml-1 text-gray-500 hover:text-gray-700"
-                        >
-                          <X className="h-3 w-3" />
-                        </button>
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
+              <div className="space-y-2">
+                <Label htmlFor="dietType">Diet Type</Label>
+                <Select value={dietType} onValueChange={(value) => {
+                  setDietType(value);
+                  if (mealPlan) {
+                    setMealPlan(null);
+                    setLoading(true);
+                    setTimeout(() => generateMealPlan(), 100);
+                  }
+                }}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select diet type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="any">Any</SelectItem>
+                    <SelectItem value="vegetarian">Vegetarian</SelectItem>
+                    <SelectItem value="vegan">Vegan</SelectItem>
+                    <SelectItem value="non-vegetarian">Non-vegetarian</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              
+              <div className="space-y-2">
+                <Label>Daily Calories ({dailyCalories} kcal)</Label>
+                <Slider 
+                  min={1200}
+                  max={3500}
+                  step={100}
+                  value={[dailyCalories]}
+                  onValueChange={(value) => {
+                    setDailyCalories(value[0]);
+                    if (mealPlan) {
+                      setMealPlan(null);
+                      setLoading(true);
+                      setTimeout(() => generateMealPlan(), 500);
+                    }
+                  }}
+                  className="py-4"
+                />
+              </div>
+              
+              <div className="space-y-2">
+                <Label>Number of Days ({days})</Label>
+                <Slider 
+                  min={1}
+                  max={14}
+                  step={1}
+                  value={[days]}
+                  onValueChange={(value) => {
+                    setDays(value[0]);
+                    if (mealPlan) {
+                      setMealPlan(null);
+                      setLoading(true);
+                      setTimeout(() => generateMealPlan(), 500);
+                    }
+                  }}
+                  className="py-4"
+                />
               </div>
             </div>
             
-            {error && (
-              <div className="text-red-500 text-sm mt-2">
-                {error}
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label>Allergies/Restrictions</Label>
+                <div className="grid grid-cols-2 gap-2">
+                  {allergyOptions.map((allergy) => (
+                    <div key={allergy} className="flex items-center space-x-2">
+                      <Checkbox 
+                        id={`allergy-${allergy}`} 
+                        checked={allergies.includes(allergy)}
+                        onCheckedChange={() => {
+                          toggleAllergy(allergy);
+                          if (mealPlan) {
+                            setTimeout(() => {
+                              setMealPlan(null);
+                              setLoading(true);
+                              generateMealPlan();
+                            }, 300);
+                          }
+                        }}
+                      />
+                      <Label htmlFor={`allergy-${allergy}`}>{allergy}</Label>
+                    </div>
+                  ))}
+                </div>
               </div>
-            )}
-            
-            <Button 
-              onClick={generateMealPlan}
-              className="w-full bg-green-600 hover:bg-green-700 mt-4"
-            >
-              Generate Meal Plan
-            </Button>
+              
+              <div className="space-y-2">
+                <Label>Cuisine Preferences</Label>
+                <div className="grid grid-cols-2 gap-2">
+                  {cuisineOptions.map((cuisine) => (
+                    <div key={cuisine} className="flex items-center space-x-2">
+                      <Checkbox 
+                        id={`cuisine-${cuisine}`} 
+                        checked={cuisinePreference.includes(cuisine)}
+                        onCheckedChange={() => {
+                          toggleCuisine(cuisine);
+                          if (mealPlan && cuisinePreference.length < 3) {
+                            setTimeout(() => {
+                              setMealPlan(null);
+                              setLoading(true);
+                              generateMealPlan();
+                            }, 300);
+                          }
+                        }}
+                      />
+                      <Label htmlFor={`cuisine-${cuisine}`}>{cuisine}</Label>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              
+              <div className="space-y-2">
+                <Label>Excluded Foods</Label>
+                <div className="flex gap-2">
+                  <Input 
+                    placeholder="Food to exclude" 
+                    value={currentExclusion}
+                    onChange={(e) => setCurrentExclusion(e.target.value)}
+                    onKeyDown={handleExclusionKeyDown}
+                    className="flex-1"
+                  />
+                  <Button 
+                    variant="outline" 
+                    onClick={() => {
+                      addExclusion();
+                      if (mealPlan && exclusions.length < 3) {
+                        setTimeout(() => {
+                          setMealPlan(null);
+                          setLoading(true);
+                          generateMealPlan();
+                        }, 300);
+                      }
+                    }}
+                    disabled={!currentExclusion.trim()}
+                  >
+                    <Plus className="h-4 w-4 mr-1" /> Add
+                  </Button>
+                </div>
+                
+                <div className="flex flex-wrap gap-2 pt-2">
+                  {exclusions.map((item, i) => (
+                    <Badge key={i} variant="secondary" className="px-2 py-1">
+                      {item}
+                      <button 
+                        onClick={() => {
+                          removeExclusion(item);
+                          if (mealPlan) {
+                            setTimeout(() => {
+                              setMealPlan(null);
+                              setLoading(true);
+                              generateMealPlan();
+                            }, 300);
+                          }
+                        }}
+                        className="ml-1 text-gray-500 hover:text-gray-700"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
-        )}
+          
+          {error && (
+            <div className="text-red-500 text-sm mt-2">
+              {error}
+            </div>
+          )}
+          
+          <Button 
+            onClick={generateMealPlan}
+            className="w-full bg-green-600 hover:bg-green-700 mt-4"
+            disabled={loading}
+          >
+            {loading ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                Generating...
+              </>
+            ) : (
+              'Generate New Meal Plan'
+            )}
+          </Button>
+        </div>
         
         {loading && (
           <div className="py-20 text-center">
@@ -446,12 +617,12 @@ export default function AIMealPlan() {
         )}
         
         {mealPlan && !loading && (
-          <div className="space-y-6">
+          <div className="space-y-6 mt-8">
             <div className="flex justify-between items-center">
               <h3 className="text-xl font-bold">Your {days}-Day Meal Plan</h3>
               <div className="flex space-x-2">
                 <Button variant="outline" size="sm" onClick={handleStartOver} className="flex items-center">
-                  <RotateCw className="h-4 w-4 mr-1" /> Start Over
+                  <RotateCw className="h-4 w-4 mr-1" /> Regenerate
                 </Button>
                 <Button variant="outline" size="sm" onClick={generatePDF} className="flex items-center">
                   <Download className="h-4 w-4 mr-1" /> Download PDF

@@ -130,6 +130,7 @@ export async function suggestMealPlan(
     days = 7
   } = preferences || {};
   
+  // Create a structured prompt with clear formatting instructions
   const prompt = `
   Create a detailed ${days}-day meal plan based on the following preferences:
   
@@ -150,15 +151,16 @@ export async function suggestMealPlan(
      - Macronutrients (protein, carbs, fat)
      - Alternative options to replace ingredients if desired
   
-  Ensure all meals are easily available, practical to prepare, and align with the dietary preferences.
-  Provide realistic nutritional values for each meal.
-  
-  VERY IMPORTANT: 
+  VERY IMPORTANT REQUIREMENTS:
   1. Your response MUST be in valid JSON format
   2. Do NOT include any explanations or text outside the JSON 
   3. Make sure all numeric values are actual numbers, not strings
-  4. Include alternatives for each meal
+  4. Include at least 2-3 alternatives for each meal
   5. Do not use any special characters that would break JSON parsing
+  6. Ensure VARIETY - do not repeat the same dishes across different days
+  7. Be creative with meal options - each day should have different dishes
+  8. For breakfast, lunch, dinner and snacks, ensure variety across the days
+  9. Make sure all meals are diverse and don't repeat the same base ingredients
   
   Use exactly this JSON structure:
   
@@ -194,23 +196,39 @@ export async function suggestMealPlan(
   }
   `;
   
-  const response = await queryLMStudio(prompt, { responseFormat: 'json' });
+  // Use the enhanced responseFormat parameter to indicate we need JSON
+  const response = await queryLMStudio(prompt, { 
+    responseFormat: 'json',
+    temperature: 0.8,  // Increased temperature for more creative and diverse outputs
+    maxTokens: 2048    // Increase token limit for longer meal plans
+  });
   
-  // If successful but response is not in valid JSON format, try to extract it
+  // If successful but response is not in valid JSON format, try to extract and fix it
   if (response.success && response.data) {
     try {
-      // Test if it's already valid JSON
+      // First attempt: Try parsing directly
       JSON.parse(response.data);
       return response;
     } catch (err) {
-      console.log("Response is not valid JSON, attempting to extract JSON...");
+      console.log("Response is not valid JSON, attempting to extract and fix JSON...");
       
-      // Try to extract JSON from the response
+      // Second attempt: Remove markdown code blocks
+      let cleanedData = response.data.replace(/```json\s*|\s*```/g, '');
+      try {
+        JSON.parse(cleanedData);
+        return {
+          success: true,
+          data: cleanedData
+        };
+      } catch (error) {
+        console.log("Still not valid JSON after removing code blocks");
+      }
+      
+      // Third attempt: Extract JSON pattern
       const jsonMatch = response.data.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         const extractedJson = jsonMatch[0];
         try {
-          // Validate extracted JSON
           JSON.parse(extractedJson);
           return {
             success: true,
@@ -221,8 +239,93 @@ export async function suggestMealPlan(
         }
       }
       
-      // If we can't extract valid JSON, return the original response
-      return response;
+      // Fourth attempt: Fix common JSON syntax issues
+      try {
+        // Replace single quotes with double quotes
+        cleanedData = response.data.replace(/'/g, '"');
+        
+        // Make sure property names are in double quotes
+        cleanedData = cleanedData.replace(/([{,]\s*)(\w+)(\s*:)/g, '$1"$2"$3');
+        
+        // Remove trailing commas in arrays and objects
+        cleanedData = cleanedData.replace(/,(\s*[\]}])/g, '$1');
+        
+        // Try to parse after fixing
+        JSON.parse(cleanedData);
+        return {
+          success: true,
+          data: cleanedData
+        };
+      } catch (fixErr) {
+        console.error("Could not fix JSON formatting:", fixErr);
+      }
+      
+      // Fifth attempt: Generate a fallback meal plan if everything else fails
+      try {
+        // Simple fallback data structure with minimal content
+        const fallbackPlan = {
+          dailyCalories: dailyCalories,
+          days: Array.from({ length: days }, (_, i) => ({
+            day: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][i % 7],
+            meals: [
+              {
+                name: "Breakfast",
+                dish: dietType === "vegetarian" ? "Oatmeal with Fruits" : "Scrambled Eggs with Toast",
+                calories: Math.round(dailyCalories * 0.25),
+                protein: 15,
+                carbs: 30,
+                fat: 10,
+                time: "8:00 AM",
+                alternatives: ["Yogurt with Granola", "Fruit Smoothie"]
+              },
+              {
+                name: "Lunch",
+                dish: dietType === "vegetarian" ? "Lentil Soup with Rice" : "Grilled Chicken Salad",
+                calories: Math.round(dailyCalories * 0.35),
+                protein: 25,
+                carbs: 45,
+                fat: 15,
+                time: "1:00 PM",
+                alternatives: ["Quinoa Bowl", "Vegetable Wrap"]
+              },
+              {
+                name: "Snack",
+                dish: "Mixed Nuts and Dried Fruits",
+                calories: Math.round(dailyCalories * 0.15),
+                protein: 5,
+                carbs: 15,
+                fat: 10,
+                time: "4:00 PM",
+                alternatives: ["Greek Yogurt", "Protein Bar"]
+              },
+              {
+                name: "Dinner",
+                dish: dietType === "vegetarian" ? "Vegetable Stir Fry with Tofu" : "Baked Fish with Vegetables",
+                calories: Math.round(dailyCalories * 0.25),
+                protein: 20,
+                carbs: 30,
+                fat: 10,
+                time: "8:00 PM",
+                alternatives: ["Soup and Salad", "Steamed Vegetables with Rice"]
+              }
+            ]
+          }))
+        };
+        
+        return {
+          success: true,
+          data: JSON.stringify(fallbackPlan),
+          error: "Used fallback meal plan due to JSON parsing errors"
+        };
+      } catch (fallbackErr) {
+        console.error("Even fallback plan creation failed:", fallbackErr);
+      }
+      
+      // If all attempts fail, return the original response
+      return {
+        success: false,
+        error: "Could not process the meal plan data. Please try again."
+      };
     }
   }
   
