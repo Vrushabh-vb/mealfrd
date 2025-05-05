@@ -11,6 +11,7 @@ interface GeminiRequest {
   prompt: string;
   temperature?: number;
   maxTokens?: number;
+  responseFormat?: string;
   [key: string]: any; // Allow other properties
 }
 
@@ -49,7 +50,12 @@ export async function POST(request: Request) {
     
     // Get the request body
     const requestData = await request.json() as GeminiRequest;
-    const { prompt, temperature = 0.7, maxTokens = 1024 } = requestData;
+    const { 
+      prompt, 
+      temperature = 0.7, 
+      maxTokens = 1024,
+      responseFormat
+    } = requestData;
     
     if (!prompt) {
       return NextResponse.json(
@@ -82,9 +88,26 @@ export async function POST(request: Request) {
       },
     ];
     
+    // Add system instructions for JSON response format if requested
+    let enhancedPrompt = prompt;
+    let systemInstruction = '';
+    
+    if (responseFormat === 'json') {
+      systemInstruction = `You are a JSON generation assistant. Your responses must:
+1. ALWAYS be valid, parseable JSON
+2. NOT include any explanatory text outside the JSON
+3. NOT wrap the JSON in backticks or markdown code blocks
+4. Make sure all numeric values are actual numbers, not strings
+5. Use double quotes for all strings and property names
+6. Never include trailing commas in arrays or objects`;
+    }
+    
     // Generate content
     const result = await model.generateContent({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      contents: [
+        ...(systemInstruction ? [{ role: "system", parts: [{ text: systemInstruction }] }] : []),
+        { role: "user", parts: [{ text: enhancedPrompt }] }
+      ],
       safetySettings,
       generationConfig: {
         temperature,
@@ -93,13 +116,31 @@ export async function POST(request: Request) {
     });
     
     const response = result.response;
-    const text = response.text();
+    let text = response.text();
     
     if (!text) {
       return NextResponse.json(
         { error: "Empty response from Gemini API" },
         { status: 500 }
       );
+    }
+    
+    // Post-process response for JSON format if requested
+    if (responseFormat === 'json') {
+      // Try to clean up the response to ensure it's valid JSON
+      // Remove any markdown code blocks
+      text = text.replace(/```json\s*|\s*```/g, '');
+      
+      // Check if it's valid JSON - if not, try to extract it
+      try {
+        JSON.parse(text);
+      } catch (err) {
+        // Try to extract JSON if embedded in other text
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          text = jsonMatch[0];
+        }
+      }
     }
     
     // Format the response to match the expected format from other LLM endpoints

@@ -12,10 +12,11 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Slider } from "@/components/ui/slider"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Checkbox } from "@/components/ui/checkbox"
-import { ArrowRight, Check, Loader2, Mail, Download, Calendar, Clock, Plus, Trash2, Search } from "lucide-react"
+import { ArrowRight, Check, Loader2, Mail, Download, Calendar, Clock, Plus, Trash2, Search, Cpu } from "lucide-react"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { toast } from "@/components/ui/use-toast"
 import { ToastAction } from "@/components/ui/toast"
+import { suggestMealPlan } from "@/lib/lm-studio"
 
 // Food database with nutritional information per 100g or per standard serving
 const foodDatabase = {
@@ -102,6 +103,27 @@ export default function MealPlanBuilder() {
   const [searchResults, setSearchResults] = useState<NutritionalData[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [customFoods, setCustomFoods] = useState<Record<string, NutritionalData>>({});
+  
+  // AI meal plan state
+  const [isGeneratingAiPlan, setIsGeneratingAiPlan] = useState(false)
+  const [aiMealPlan, setAiMealPlan] = useState<{
+    dailyCalories: number;
+    days: {
+      day: string;
+      meals: {
+        name: string;
+        dish: string;
+        calories: number;
+        protein: number;
+        carbs: number;
+        fat: number;
+        time: string;
+        alternatives?: string[];
+      }[];
+    }[];
+  } | null>(null)
+  const [aiMealPlanError, setAiMealPlanError] = useState<string | null>(null)
+  const [activeAlternative, setActiveAlternative] = useState<{day: number, meal: number, dish: string} | null>(null)
   
   // Calculate BMR using Mifflin-St Jeor Equation
   const calculateBMR = () => {
@@ -775,6 +797,80 @@ export default function MealPlanBuilder() {
     visible: { opacity: 1, y: 0, transition: { duration: 0.5 } },
   }
 
+  // Generate AI meal plan based on current preferences
+  const generateAIMealPlan = async () => {
+    setIsGeneratingAiPlan(true)
+    setAiMealPlanError(null)
+    
+    try {
+      const response = await suggestMealPlan({
+        goal: formData.goal || "general_health",
+        dietType: formData.dietType || undefined,
+        allergies: formData.allergies.length > 0 ? formData.allergies : undefined,
+        cuisinePreference: formData.cuisinePreference.length > 0 ? formData.cuisinePreference : undefined,
+        dailyCalories: calculateBMR(),
+        days: 7
+      })
+      
+      if (response.success && response.data) {
+        try {
+          // Try to parse JSON response
+          const parsedData = JSON.parse(response.data)
+          setAiMealPlan(parsedData)
+        } catch (parseError) {
+          console.error("Failed to parse JSON:", parseError)
+          
+          // Try to extract JSON from the response if it contains additional text
+          const jsonMatch = response.data.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            const extractedJson = jsonMatch[0];
+            try {
+              // Try to parse the extracted JSON
+              const parsedData = JSON.parse(extractedJson);
+              setAiMealPlan(parsedData);
+              return;
+            } catch (extractError) {
+              console.error("Failed to parse extracted JSON:", extractError);
+            }
+          }
+          
+          // If we're still here, try to clean and fix common JSON issues
+          try {
+            // 1. Replace single quotes with double quotes
+            let cleanedData = response.data.replace(/'/g, '"');
+            
+            // 2. Make sure property names are in double quotes
+            cleanedData = cleanedData.replace(/([{,]\s*)(\w+)(\s*:)/g, '$1"$2"$3');
+            
+            // 3. Try to parse again
+            const parsedData = JSON.parse(cleanedData);
+            setAiMealPlan(parsedData);
+          } catch (cleanError) {
+            // All parsing attempts failed
+            setAiMealPlanError("Could not process the meal plan data. Please try again.");
+          }
+        }
+      } else {
+        setAiMealPlanError(response.error || "Failed to generate meal plan")
+      }
+    } catch (err) {
+      setAiMealPlanError("An error occurred while generating the meal plan")
+      console.error(err)
+    } finally {
+      setIsGeneratingAiPlan(false)
+    }
+  }
+  
+  // Handle meal alternative selection
+  const selectAlternative = (day: number, meal: number, alternative: string) => {
+    if (!aiMealPlan) return
+    
+    const newMealPlan = { ...aiMealPlan }
+    newMealPlan.days[day].meals[meal].dish = alternative
+    setAiMealPlan(newMealPlan)
+    setActiveAlternative(null)
+  }
+
   return (
     <div className="w-full max-w-4xl mx-auto">
       <Card className="border-green-200 shadow-lg">
@@ -1281,38 +1377,139 @@ export default function MealPlanBuilder() {
 
                   {/* Sample Days */}
                   <div className="space-y-6">
-                    {sampleMealPlan.days.map((day, index) => (
-                      <div key={index} className="border rounded-lg overflow-hidden">
-                        <div className="bg-gray-100 px-4 py-2 flex items-center">
-                          <Calendar className="h-4 w-4 text-gray-600 mr-2" />
-                          <h4 className="font-medium">{day.day}</h4>
+                    {/* Add AI Meal Plan Generator Button */}
+                    <div className="flex justify-between items-center mb-4">
+                      <h4 className="font-semibold text-lg">Daily Calorie Target: {aiMealPlan ? aiMealPlan.dailyCalories : calculateBMR()} kcal</h4>
+                      
+                      {!isGeneratingAiPlan && !aiMealPlan && (
+                        <Button 
+                          onClick={generateAIMealPlan} 
+                          className="flex items-center bg-green-600 hover:bg-green-700 text-white"
+                        >
+                          <Cpu className="mr-2 h-4 w-4" />
+                          Generate AI Meal Plan
+                        </Button>
+                      )}
+                      
+                      {isGeneratingAiPlan && (
+                        <div className="flex items-center">
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          <span>Generating your plan...</span>
                         </div>
-                        <div className="divide-y">
-                          {day.meals.map((meal, mealIndex) => (
-                            <div key={mealIndex} className="p-4 hover:bg-gray-50">
-                              <div className="flex justify-between items-start">
-                                <div>
-                                  <div className="flex items-center">
-                                    <Clock className="h-3 w-3 text-gray-500 mr-1" />
-                                    <span className="text-xs text-gray-500">{meal.time}</span>
+                      )}
+                    </div>
+                    
+                    {aiMealPlanError && (
+                      <div className="bg-red-50 border border-red-200 text-red-700 p-3 rounded-md mb-4">
+                        {aiMealPlanError}
+                      </div>
+                    )}
+                    
+                    {/* Display AI meal plan or sample meal plan */}
+                    {aiMealPlan ? (
+                      // AI-generated meal plan
+                      aiMealPlan.days.map((day, dayIndex) => (
+                        <div key={dayIndex} className="border rounded-lg overflow-hidden">
+                          <div className="bg-gray-100 px-4 py-2 flex items-center">
+                            <Calendar className="h-4 w-4 text-gray-600 mr-2" />
+                            <h4 className="font-medium">{day.day}</h4>
+                          </div>
+                          <div className="divide-y">
+                            {day.meals.map((meal, mealIndex) => (
+                              <div key={mealIndex} className="p-4 hover:bg-gray-50">
+                                <div className="flex justify-between items-start">
+                                  <div>
+                                    <div className="flex items-center">
+                                      <Clock className="h-3 w-3 text-gray-500 mr-1" />
+                                      <span className="text-xs text-gray-500">{meal.time}</span>
+                                    </div>
+                                    <h5 className="font-medium text-gray-900">{meal.name}</h5>
+                                    <div className="flex items-center">
+                                      <p className="text-sm text-gray-700">{meal.dish}</p>
+                                      {meal.alternatives && meal.alternatives.length > 0 && (
+                                        <Button 
+                                          variant="ghost" 
+                                          size="sm" 
+                                          className="h-6 ml-1 text-green-600"
+                                          onClick={() => setActiveAlternative(activeAlternative?.day === dayIndex && 
+                                                                              activeAlternative?.meal === mealIndex ? 
+                                                                              null : 
+                                                                              {day: dayIndex, meal: mealIndex, dish: meal.dish})}
+                                        >
+                                          Alternatives
+                                        </Button>
+                                      )}
+                                    </div>
+                                    
+                                    {/* Alternative options dropdown */}
+                                    {activeAlternative?.day === dayIndex && 
+                                    activeAlternative?.meal === mealIndex && 
+                                    meal.alternatives && (
+                                      <div className="mt-2 bg-green-50 p-2 rounded">
+                                        <p className="text-xs font-medium text-gray-600 mb-1">Replace with:</p>
+                                        <div className="space-y-1">
+                                          {meal.alternatives.map((alt, idx) => (
+                                            <button
+                                              key={idx}
+                                              className="block w-full text-left text-sm text-gray-700 hover:bg-green-100 p-1 rounded"
+                                              onClick={() => selectAlternative(dayIndex, mealIndex, alt)}
+                                            >
+                                              {alt}
+                                            </button>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
                                   </div>
-                                  <h5 className="font-medium text-gray-900">{meal.name}</h5>
-                                  <p className="text-sm text-gray-700">{meal.dish}</p>
-                                </div>
-                                <div className="text-right">
-                                  <p className="text-sm font-medium text-green-600">{meal.calories} kcal</p>
-                                  <div className="flex space-x-2 text-xs text-gray-500 mt-1">
-                                    <span>P: {meal.protein}g</span>
-                                    <span>C: {meal.carbs}g</span>
-                                    <span>F: {meal.fat}g</span>
+                                  <div className="text-right">
+                                    <p className="text-sm font-medium text-green-600">{meal.calories} kcal</p>
+                                    <div className="flex space-x-2 text-xs text-gray-500 mt-1">
+                                      <span>P: {meal.protein}g</span>
+                                      <span>C: {meal.carbs}g</span>
+                                      <span>F: {meal.fat}g</span>
+                                    </div>
                                   </div>
                                 </div>
                               </div>
-                            </div>
-                          ))}
+                            ))}
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      ))
+                    ) : (
+                      // Default static meal plan
+                      sampleMealPlan.days.map((day, index) => (
+                        <div key={index} className="border rounded-lg overflow-hidden">
+                          <div className="bg-gray-100 px-4 py-2 flex items-center">
+                            <Calendar className="h-4 w-4 text-gray-600 mr-2" />
+                            <h4 className="font-medium">{day.day}</h4>
+                          </div>
+                          <div className="divide-y">
+                            {day.meals.map((meal, mealIndex) => (
+                              <div key={mealIndex} className="p-4 hover:bg-gray-50">
+                                <div className="flex justify-between items-start">
+                                  <div>
+                                    <div className="flex items-center">
+                                      <Clock className="h-3 w-3 text-gray-500 mr-1" />
+                                      <span className="text-xs text-gray-500">{meal.time}</span>
+                                    </div>
+                                    <h5 className="font-medium text-gray-900">{meal.name}</h5>
+                                    <p className="text-sm text-gray-700">{meal.dish}</p>
+                                  </div>
+                                  <div className="text-right">
+                                    <p className="text-sm font-medium text-green-600">{meal.calories} kcal</p>
+                                    <div className="flex space-x-2 text-xs text-gray-500 mt-1">
+                                      <span>P: {meal.protein}g</span>
+                                      <span>C: {meal.carbs}g</span>
+                                      <span>F: {meal.fat}g</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))
+                    )}
                   </div>
                   
                   <div className="flex flex-col sm:flex-row sm:justify-between gap-4 mt-8">

@@ -8,7 +8,14 @@ interface LMStudioResponse {
 }
 
 // Query the Gemini API through our server-side proxy
-export async function queryLMStudio(prompt: string): Promise<LMStudioResponse> {
+export async function queryLMStudio(
+  prompt: string, 
+  options?: { 
+    temperature?: number, 
+    maxTokens?: number,
+    responseFormat?: string 
+  }
+): Promise<LMStudioResponse> {
   try {
     console.log("Connecting to Gemini API via server-side API route");
     
@@ -19,8 +26,9 @@ export async function queryLMStudio(prompt: string): Promise<LMStudioResponse> {
       },
       body: JSON.stringify({
         prompt: prompt,
-        temperature: 0.7,
-        maxTokens: 1024
+        temperature: options?.temperature ?? 0.7,
+        maxTokens: options?.maxTokens ?? 1024,
+        responseFormat: options?.responseFormat
       }),
     });
 
@@ -98,4 +106,125 @@ export async function suggestMeal(
   `;
   
   return queryLMStudio(prompt);
+}
+
+// Function for generating personalized meal plans
+export async function suggestMealPlan(
+  preferences: { 
+    goal?: string,
+    dietType?: string, 
+    allergies?: string[],
+    cuisinePreference?: string[],
+    exclusions?: string[],
+    dailyCalories?: number,
+    days?: number
+  }
+): Promise<LMStudioResponse> {
+  const { 
+    goal, 
+    dietType, 
+    allergies, 
+    cuisinePreference, 
+    exclusions,
+    dailyCalories = 2000,
+    days = 7
+  } = preferences || {};
+  
+  const prompt = `
+  Create a detailed ${days}-day meal plan based on the following preferences:
+  
+  ${goal ? `Goal: ${goal}` : ''}
+  ${dietType ? `Diet type: ${dietType}` : ''}
+  ${allergies && allergies.length > 0 ? `Allergies to avoid: ${allergies.join(', ')}` : ''}
+  ${cuisinePreference && cuisinePreference.length > 0 ? `Preferred cuisines: ${cuisinePreference.join(', ')}` : ''}
+  ${exclusions && exclusions.length > 0 ? `Excluded foods: ${exclusions.join(', ')}` : ''}
+  Target daily calories: ${dailyCalories} kcal
+  
+  For each day, provide:
+  - Day of the week
+  - 4 meals (Breakfast, Lunch, Snack, Dinner)
+  - For each meal include:
+     - Name of the dish
+     - Time to eat
+     - Calories
+     - Macronutrients (protein, carbs, fat)
+     - Alternative options to replace ingredients if desired
+  
+  Ensure all meals are easily available, practical to prepare, and align with the dietary preferences.
+  Provide realistic nutritional values for each meal.
+  
+  VERY IMPORTANT: 
+  1. Your response MUST be in valid JSON format
+  2. Do NOT include any explanations or text outside the JSON 
+  3. Make sure all numeric values are actual numbers, not strings
+  4. Include alternatives for each meal
+  5. Do not use any special characters that would break JSON parsing
+  
+  Use exactly this JSON structure:
+  
+  {
+    "dailyCalories": 2000,
+    "days": [
+      {
+        "day": "Monday",
+        "meals": [
+          {
+            "name": "Breakfast",
+            "dish": "Vegetable Upma with Green Chutney",
+            "calories": 320,
+            "protein": 15,
+            "carbs": 40,
+            "fat": 10,
+            "time": "8:00 AM",
+            "alternatives": ["Oatmeal with fruits", "Whole grain toast with avocado"]
+          },
+          {
+            "name": "Lunch",
+            "dish": "Lentil Soup with Brown Rice",
+            "calories": 420,
+            "protein": 20,
+            "carbs": 65,
+            "fat": 8,
+            "time": "1:00 PM",
+            "alternatives": ["Chickpea Salad", "Quinoa Bowl"]
+          }
+        ]
+      }
+    ]
+  }
+  `;
+  
+  const response = await queryLMStudio(prompt, { responseFormat: 'json' });
+  
+  // If successful but response is not in valid JSON format, try to extract it
+  if (response.success && response.data) {
+    try {
+      // Test if it's already valid JSON
+      JSON.parse(response.data);
+      return response;
+    } catch (err) {
+      console.log("Response is not valid JSON, attempting to extract JSON...");
+      
+      // Try to extract JSON from the response
+      const jsonMatch = response.data.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const extractedJson = jsonMatch[0];
+        try {
+          // Validate extracted JSON
+          JSON.parse(extractedJson);
+          return {
+            success: true,
+            data: extractedJson
+          };
+        } catch (innerErr) {
+          console.error("Extracted content is not valid JSON:", innerErr);
+        }
+      }
+      
+      // If we can't extract valid JSON, return the original response
+      return response;
+    }
+  }
+  
+  return response;
 }
