@@ -207,7 +207,13 @@ export async function suggestMealPlan(
   if (response.success && response.data) {
     try {
       // First attempt: Try parsing directly
-      JSON.parse(response.data);
+      const parsedData = JSON.parse(response.data);
+      
+      // Validate the essential structure of the meal plan
+      if (!validateMealPlanStructure(parsedData)) {
+        throw new Error("Invalid meal plan structure");
+      }
+      
       return response;
     } catch (err) {
       console.log("Response is not valid JSON, attempting to extract and fix JSON...");
@@ -215,11 +221,15 @@ export async function suggestMealPlan(
       // Second attempt: Remove markdown code blocks
       let cleanedData = response.data.replace(/```json\s*|\s*```/g, '');
       try {
-        JSON.parse(cleanedData);
-        return {
-          success: true,
-          data: cleanedData
-        };
+        const parsedData = JSON.parse(cleanedData);
+        if (validateMealPlanStructure(parsedData)) {
+          return {
+            success: true,
+            data: cleanedData
+          };
+        } else {
+          throw new Error("Invalid meal plan structure after code block removal");
+        }
       } catch (error) {
         console.log("Still not valid JSON after removing code blocks");
       }
@@ -229,11 +239,15 @@ export async function suggestMealPlan(
       if (jsonMatch) {
         const extractedJson = jsonMatch[0];
         try {
-          JSON.parse(extractedJson);
-          return {
-            success: true,
-            data: extractedJson
-          };
+          const parsedData = JSON.parse(extractedJson);
+          if (validateMealPlanStructure(parsedData)) {
+            return {
+              success: true,
+              data: extractedJson
+            };
+          } else {
+            throw new Error("Invalid meal plan structure in extracted JSON");
+          }
         } catch (innerErr) {
           console.error("Extracted content is not valid JSON:", innerErr);
         }
@@ -251,66 +265,23 @@ export async function suggestMealPlan(
         cleanedData = cleanedData.replace(/,(\s*[\]}])/g, '$1');
         
         // Try to parse after fixing
-        JSON.parse(cleanedData);
-        return {
-          success: true,
-          data: cleanedData
-        };
+        const parsedData = JSON.parse(cleanedData);
+        if (validateMealPlanStructure(parsedData)) {
+          return {
+            success: true,
+            data: cleanedData
+          };
+        } else {
+          throw new Error("Invalid meal plan structure after syntax fixes");
+        }
       } catch (fixErr) {
         console.error("Could not fix JSON formatting:", fixErr);
       }
       
       // Fifth attempt: Generate a fallback meal plan if everything else fails
       try {
-        // Simple fallback data structure with minimal content
-        const fallbackPlan = {
-          dailyCalories: dailyCalories,
-          days: Array.from({ length: days }, (_, i) => ({
-            day: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][i % 7],
-            meals: [
-              {
-                name: "Breakfast",
-                dish: dietType === "vegetarian" ? "Oatmeal with Fruits" : "Scrambled Eggs with Toast",
-                calories: Math.round(dailyCalories * 0.25),
-                protein: 15,
-                carbs: 30,
-                fat: 10,
-                time: "8:00 AM",
-                alternatives: ["Yogurt with Granola", "Fruit Smoothie"]
-              },
-              {
-                name: "Lunch",
-                dish: dietType === "vegetarian" ? "Lentil Soup with Rice" : "Grilled Chicken Salad",
-                calories: Math.round(dailyCalories * 0.35),
-                protein: 25,
-                carbs: 45,
-                fat: 15,
-                time: "1:00 PM",
-                alternatives: ["Quinoa Bowl", "Vegetable Wrap"]
-              },
-              {
-                name: "Snack",
-                dish: "Mixed Nuts and Dried Fruits",
-                calories: Math.round(dailyCalories * 0.15),
-                protein: 5,
-                carbs: 15,
-                fat: 10,
-                time: "4:00 PM",
-                alternatives: ["Greek Yogurt", "Protein Bar"]
-              },
-              {
-                name: "Dinner",
-                dish: dietType === "vegetarian" ? "Vegetable Stir Fry with Tofu" : "Baked Fish with Vegetables",
-                calories: Math.round(dailyCalories * 0.25),
-                protein: 20,
-                carbs: 30,
-                fat: 10,
-                time: "8:00 PM",
-                alternatives: ["Soup and Salad", "Steamed Vegetables with Rice"]
-              }
-            ]
-          }))
-        };
+        // Generate a fallback meal plan with guaranteed variety
+        const fallbackPlan = generateFallbackMealPlan(dailyCalories, days, dietType);
         
         return {
           success: true,
@@ -330,4 +301,200 @@ export async function suggestMealPlan(
   }
   
   return response;
+}
+
+// Helper function to validate meal plan structure
+function validateMealPlanStructure(data: any): boolean {
+  // Check if the data has the required fields
+  if (!data || typeof data !== 'object') return false;
+  if (!('dailyCalories' in data) || !('days' in data)) return false;
+  if (!Array.isArray(data.days) || data.days.length === 0) return false;
+  
+  // Check each day structure
+  for (const day of data.days) {
+    if (!day.day || !day.meals || !Array.isArray(day.meals) || day.meals.length === 0) {
+      return false;
+    }
+    
+    // Check each meal
+    for (const meal of day.meals) {
+      if (!meal.name || !meal.dish || 
+          typeof meal.calories !== 'number' || 
+          typeof meal.protein !== 'number' || 
+          typeof meal.carbs !== 'number' || 
+          typeof meal.fat !== 'number' || 
+          !meal.time) {
+        return false;
+      }
+      
+      // Ensure alternatives exist and are an array
+      if (!meal.alternatives || !Array.isArray(meal.alternatives)) {
+        meal.alternatives = generateDefaultAlternatives(meal.dish);
+      }
+    }
+  }
+  
+  return true;
+}
+
+// Generate default alternatives when none are provided
+function generateDefaultAlternatives(dish: string): string[] {
+  const defaultAlternatives = [
+    "Oatmeal with fruits", "Greek yogurt with berries", "Whole grain toast with avocado",
+    "Quinoa bowl", "Vegetable wrap", "Lentil soup", "Chickpea salad",
+    "Mixed nuts", "Fruit and yogurt", "Protein smoothie",
+    "Grilled fish", "Vegetable stir-fry", "Bean chili", "Roasted vegetables"
+  ];
+  
+  // Return a couple random alternatives that aren't the same as the original dish
+  return defaultAlternatives
+    .filter(alt => alt.toLowerCase() !== dish.toLowerCase())
+    .sort(() => Math.random() - 0.5)
+    .slice(0, 2);
+}
+
+// Generate a complete fallback meal plan with guaranteed variety
+function generateFallbackMealPlan(dailyCalories: number, days: number, dietType?: string): any {
+  // Different meal options for variety
+  const breakfastOptions = [
+    "Oatmeal with Fruits", "Scrambled Eggs with Toast", "Greek Yogurt with Berries", 
+    "Avocado Toast", "Protein Smoothie Bowl", "Vegetable Omelet", "Whole Grain Pancakes",
+    "Chia Seed Pudding", "Breakfast Burrito", "Muesli with Almond Milk"
+  ];
+  
+  const lunchOptions = [
+    "Grilled Chicken Salad", "Quinoa Bowl", "Tuna Wrap", "Vegetable Soup with Bread",
+    "Lentil Curry with Rice", "Mediterranean Salad", "Falafel Pita", "Bean Burrito",
+    "Tofu Stir-Fry", "Pasta Primavera"
+  ];
+  
+  const snackOptions = [
+    "Fruit and Nut Mix", "Greek Yogurt", "Protein Bar", "Apple with Peanut Butter",
+    "Vegetable Sticks with Hummus", "Trail Mix", "Cottage Cheese with Fruit",
+    "Rice Cakes with Avocado", "Edamame", "Boiled Eggs"
+  ];
+  
+  const dinnerOptions = [
+    "Baked Salmon with Vegetables", "Chicken Stir-Fry", "Vegetable Pasta", 
+    "Black Bean Chili", "Grilled Steak with Sweet Potato", "Tofu and Vegetable Curry",
+    "Roasted Chicken with Quinoa", "Fish Tacos", "Stuffed Bell Peppers", "Lentil Shepherd's Pie"
+  ];
+  
+  // Filter options based on diet type
+  const filteredBreakfastOptions = dietType === "vegetarian" || dietType === "vegan" 
+    ? breakfastOptions.filter(item => !item.includes("Egg") && !item.includes("Scrambled"))
+    : breakfastOptions;
+    
+  const filteredLunchOptions = dietType === "vegetarian" || dietType === "vegan"
+    ? lunchOptions.filter(item => !item.includes("Chicken") && !item.includes("Tuna"))
+    : lunchOptions;
+    
+  const filteredDinnerOptions = dietType === "vegetarian" || dietType === "vegan"
+    ? dinnerOptions.filter(item => !item.includes("Salmon") && !item.includes("Steak") && !item.includes("Chicken") && !item.includes("Fish"))
+    : dinnerOptions;
+  
+  // Further filter for vegan options
+  const veganBreakfastOptions = dietType === "vegan"
+    ? filteredBreakfastOptions.filter(item => !item.includes("Yogurt") && !item.includes("Milk") && !item.includes("Cheese"))
+    : filteredBreakfastOptions;
+    
+  const veganSnackOptions = dietType === "vegan"
+    ? snackOptions.filter(item => !item.includes("Yogurt") && !item.includes("Cheese") && !item.includes("Egg"))
+    : snackOptions;
+  
+  // Create unique arrays for each meal type
+  const breakfasts = dietType === "vegan" ? veganBreakfastOptions : filteredBreakfastOptions;
+  const lunches = filteredLunchOptions;
+  const snacks = dietType === "vegan" ? veganSnackOptions : snackOptions;
+  const dinners = filteredDinnerOptions;
+  
+  // Ensure we have enough unique options by duplicating and making slight modifications if needed
+  const ensureEnoughOptions = (options: string[], needed: number): string[] => {
+    const result = [...options];
+    while (result.length < needed) {
+      // Add variations of existing options
+      options.forEach(option => {
+        if (result.length < needed) {
+          const variation = option.includes("with") 
+            ? option.replace(/with.*$/, "with Seasonal Vegetables") 
+            : `${option} (Variation)`;
+          
+          if (!result.includes(variation)) {
+            result.push(variation);
+          }
+        }
+      });
+    }
+    return result;
+  };
+  
+  // Make sure we have enough options for the meal plan
+  const shuffledBreakfasts = ensureEnoughOptions(breakfasts, days).sort(() => Math.random() - 0.5);
+  const shuffledLunches = ensureEnoughOptions(lunches, days).sort(() => Math.random() - 0.5);
+  const shuffledSnacks = ensureEnoughOptions(snacks, days).sort(() => Math.random() - 0.5);
+  const shuffledDinners = ensureEnoughOptions(dinners, days).sort(() => Math.random() - 0.5);
+  
+  // Generate days with unique meals
+  const dayNames = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+  
+  return {
+    dailyCalories: dailyCalories,
+    days: Array.from({ length: days }, (_, i) => ({
+      day: dayNames[i % 7],
+      meals: [
+        {
+          name: "Breakfast",
+          dish: shuffledBreakfasts[i % shuffledBreakfasts.length],
+          calories: Math.round(dailyCalories * 0.25),
+          protein: 15,
+          carbs: 30,
+          fat: 10,
+          time: "8:00 AM",
+          alternatives: [
+            shuffledBreakfasts[(i + 1) % shuffledBreakfasts.length],
+            shuffledBreakfasts[(i + 2) % shuffledBreakfasts.length]
+          ]
+        },
+        {
+          name: "Lunch",
+          dish: shuffledLunches[i % shuffledLunches.length],
+          calories: Math.round(dailyCalories * 0.35),
+          protein: 25,
+          carbs: 45,
+          fat: 15,
+          time: "1:00 PM",
+          alternatives: [
+            shuffledLunches[(i + 1) % shuffledLunches.length],
+            shuffledLunches[(i + 2) % shuffledLunches.length]
+          ]
+        },
+        {
+          name: "Snack",
+          dish: shuffledSnacks[i % shuffledSnacks.length],
+          calories: Math.round(dailyCalories * 0.15),
+          protein: 5,
+          carbs: 15,
+          fat: 10,
+          time: "4:00 PM",
+          alternatives: [
+            shuffledSnacks[(i + 1) % shuffledSnacks.length],
+            shuffledSnacks[(i + 2) % shuffledSnacks.length]
+          ]
+        },
+        {
+          name: "Dinner",
+          dish: shuffledDinners[i % shuffledDinners.length],
+          calories: Math.round(dailyCalories * 0.25),
+          protein: 20,
+          carbs: 30,
+          fat: 10,
+          time: "8:00 PM",
+          alternatives: [
+            shuffledDinners[(i + 1) % shuffledDinners.length],
+            shuffledDinners[(i + 2) % shuffledDinners.length]
+          ]
+        }
+      ]
+    }))
+  };
 }
