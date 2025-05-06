@@ -1,0 +1,13 @@
+version: '3'
+
+services:
+  mealmitra:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-AIzaSyAix7hz00aVUqle2r08-riFh5qbxtyj7dA}
+    restart: unless-stopped 
