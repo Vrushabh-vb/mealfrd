@@ -10,7 +10,7 @@
     "original_dev": "next dev"
   },
   "dependencies": {
-    "@vercel/analytics",
+    "@vercel/analytics":"latest",
     "@emotion/is-prop-valid": "latest",
     "@google/generative-ai": "^0.24.1",
     "@hookform/resolvers": "^3.9.1",
