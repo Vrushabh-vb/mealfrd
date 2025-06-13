@@ -11,7 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
-console.log('V0 Project Fixer');
+console.log('Project Fixer');
 console.log('---------------');
 console.log(`Current Node.js: ${process.version} at ${process.execPath}`);
 console.log(`Working directory: ${process.cwd()}`);
